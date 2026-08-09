@@ -1,0 +1,103 @@
+{
+  "system": {
+    "name": "50层全路径代码测试系统",
+    "version": "3.1.0",
+    "release_date": "2026-08-15"
+  },
+  "pipeline": {
+    "total_layers": 50,
+    "parallel_execution": false,
+    "checkpoint_enabled": true,
+    "resume_on_failure": true
+  },
+  "layers": {
+    "part1": {
+      "name": "用户交互与任务定义层",
+      "range": "1-8",
+      "cache_enabled": true
+    },
+    "part2": {
+      "name": "源码接入与预处理层",
+      "range": "9-16",
+      "cache_enabled": true
+    },
+    "part3": {
+      "name": "静态分析与路径生成层",
+      "range": "17-32",
+      "cache_enabled": true
+    },
+    "part4": {
+      "name": "测试用例生成与执行层",
+      "range": "33-42",
+      "cache_enabled": false
+    },
+    "part5": {
+      "name": "结果分析与输出层",
+      "range": "43-50",
+      "cache_enabled": false
+    }
+  },
+  "llm": {
+    "default_model": "gpt-4",
+    "fallback_models": ["gpt-3.5-turbo", "claude-3"],
+    "max_retries": 3,
+    "timeout_seconds": 60,
+    "temperature": 0.7,
+    "cache_enabled": true,
+    "cache_ttl_hours": 24
+  },
+  "coverage": {
+    "default_types": ["statement", "branch"],
+    "supported_types": [
+      "statement",
+      "branch",
+      "condition",
+      "path",
+      "function",
+      "cross_function"
+    ],
+    "threshold": {
+      "statement": 0.8,
+      "branch": 0.7,
+      "path": 0.5
+    }
+  },
+  "path_analysis": {
+    "max_path_depth": 100,
+    "max_paths_per_function": 1000,
+    "path_explosion_threshold": 10000,
+    "pruning_enabled": true,
+    "llm_pruning_weight": 0.3
+  },
+  "test_generation": {
+    "max_test_cases_per_path": 10,
+    "template_engine": "jinja2",
+    "supported_formats": ["pytest", "unittest", "junit", "gtest"],
+    "quality_threshold": 0.7,
+    "auto_optimize": true
+  },
+  "execution": {
+    "isolation_mode": "process",
+    "timeout_seconds": 30,
+    "max_concurrent": 8,
+    "retry_failed": true,
+    "max_retries": 2
+  },
+  "reporting": {
+    "output_formats": ["html", "json", "markdown", "xml"],
+    "include_charts": true,
+    "include_source_code": true,
+    "natural_language_summary": true
+  },
+  "security": {
+    "skip_sensitive_code": true,
+    "sanitize_output": true,
+    "max_file_size_mb": 100
+  },
+  "performance": {
+    "enable_profiling": false,
+    "cache_intermediate_results": true,
+    "parallel_file_processing": true,
+    "max_workers": 4
+  }
+}

@@ -1,0 +1,169 @@
+{
+  "timestamp": "2026-05-16T04:52:39.985048",
+  "tasks_processed": 100,
+  "passed": 85,
+  "failed": 15,
+  "issues": [
+    {
+      "severity": "high",
+      "category": "architecture",
+      "description": "Layer dependency resolution time grows exponentially with file count",
+      "file": "src/core/engine.py",
+      "impact": "Scale limited to 100 files"
+    },
+    {
+      "severity": "medium",
+      "category": "memory",
+      "description": "PipelineContext stores full AST for all files in memory",
+      "file": "src/core/context.py",
+      "impact": "High memory usage"
+    },
+    {
+      "severity": "low",
+      "category": "logging",
+      "description": "Too much verbose logging impacting performance",
+      "file": "src/core/engine.py",
+      "impact": "IO bottleneck"
+    },
+    {
+      "severity": "medium",
+      "category": "error_handling",
+      "description": "IndexError: list index out of range",
+      "file": "/workspace/test_projects/pandas/pandas/core/arrays/numpy_.py",
+      "task": "TASK-0004"
+    },
+    {
+      "severity": "medium",
+      "category": "error_handling",
+      "description": "MemoryError: Out of memory",
+      "file": "/workspace/test_projects/pandas/pandas/io/formats/csvs.py",
+      "task": "TASK-0010"
+    },
+    {
+      "severity": "medium",
+      "category": "error_handling",
+      "description": "TimeoutError: Task took too long",
+      "file": "/workspace/test_projects/pandas/pandas/core/base.py",
+      "task": "TASK-0012"
+    },
+    {
+      "severity": "medium",
+      "category": "error_handling",
+      "description": "IndexError: list index out of range",
+      "file": "/workspace/test_projects/pandas/asv_bench/benchmarks/frame_ctor.py",
+      "task": "TASK-0022"
+    },
+    {
+      "severity": "medium",
+      "category": "error_handling",
+      "description": "TypeError: expected string, got None",
+      "file": "/workspace/test_projects/pandas/pandas/core/dtypes/dtypes.py",
+      "task": "TASK-0037"
+    },
+    {
+      "severity": "medium",
+      "category": "error_handling",
+      "description": "TimeoutError: Task took too long",
+      "file": "/workspace/test_projects/pandas/pandas/core/indexers/objects.py",
+      "task": "TASK-0050"
+    },
+    {
+      "severity": "medium",
+      "category": "error_handling",
+      "description": "MemoryError: Out of memory",
+      "file": "/workspace/test_projects/pandas/pandas/plotting/_matplotlib/converter.py",
+      "task": "TASK-0054"
+    },
+    {
+      "severity": "medium",
+      "category": "error_handling",
+      "description": "IndexError: list index out of range",
+      "file": "/workspace/test_projects/pandas/pandas/core/tools/numeric.py",
+      "task": "TASK-0059"
+    },
+    {
+      "severity": "medium",
+      "category": "error_handling",
+      "description": "MemoryError: Out of memory",
+      "file": "/workspace/test_projects/pandas/scripts/pandas_errors_documented.py",
+      "task": "TASK-0070"
+    },
+    {
+      "severity": "medium",
+      "category": "error_handling",
+      "description": "IndexError: list index out of range",
+      "file": "/workspace/test_projects/pandas/pandas/core/internals/concat.py",
+      "task": "TASK-0086"
+    },
+    {
+      "severity": "medium",
+      "category": "error_handling",
+      "description": "IndexError: list index out of range",
+      "file": "/workspace/test_projects/pandas/pandas/core/indexes/timedeltas.py",
+      "task": "TASK-0087"
+    },
+    {
+      "severity": "medium",
+      "category": "error_handling",
+      "description": "IndexError: list index out of range",
+      "file": "/workspace/test_projects/pandas/pandas/_testing/asserters.py",
+      "task": "TASK-0092"
+    },
+    {
+      "severity": "medium",
+      "category": "error_handling",
+      "description": "IndexError: list index out of range",
+      "file": "/workspace/test_projects/pandas/scripts/pandas_errors_documented.py",
+      "task": "TASK-0093"
+    },
+    {
+      "severity": "medium",
+      "category": "error_handling",
+      "description": "IndexError: list index out of range",
+      "file": "/workspace/test_projects/pandas/pandas/io/parsers/c_parser_wrapper.py",
+      "task": "TASK-0094"
+    },
+    {
+      "severity": "medium",
+      "category": "error_handling",
+      "description": "MemoryError: Out of memory",
+      "file": "/workspace/test_projects/pandas/pandas/core/arrays/arrow/array.py",
+      "task": "TASK-0095"
+    },
+    {
+      "severity": "high",
+      "category": "scalability",
+      "description": "Path enumeration becomes impractical with >100 functions",
+      "file": "src/layers/path_analysis.py",
+      "impact": "Path explosion in large codebases"
+    },
+    {
+      "severity": "medium",
+      "category": "integration",
+      "description": "LLM integration has 30 second timeout",
+      "file": "src/plugins/llm_adapter.py",
+      "impact": "Slow batch processing"
+    },
+    {
+      "severity": "high",
+      "category": "error_recovery",
+      "description": "Single layer failure stops entire pipeline",
+      "file": "src/core/engine.py",
+      "impact": "Pipeline brittle"
+    },
+    {
+      "severity": "medium",
+      "category": "ui",
+      "description": "No progress bar for long-running tasks",
+      "file": "50-layer-visual/index.html",
+      "impact": "Poor UX"
+    },
+    {
+      "severity": "low",
+      "category": "documentation",
+      "description": "Layer configuration options not documented",
+      "file": "docs",
+      "impact": "Hard to configure"
+    }
+  ]
+}

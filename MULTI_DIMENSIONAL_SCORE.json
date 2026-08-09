@@ -1,0 +1,126 @@
+{
+  "timestamp": "2026-05-16T05:24:20.396990",
+  "normalized_score": 81.00000000000001,
+  "grade": "B+",
+  "dimensions": [
+    {
+      "category": "创新性",
+      "score": 8.5,
+      "weight": 0.15,
+      "reasoning": "50层架构设计有创新性，插件化系统设计良好"
+    },
+    {
+      "category": "创造性",
+      "score": 8.0,
+      "weight": 0.1,
+      "reasoning": "模块化设计创意，分层清晰"
+    },
+    {
+      "category": "价值量",
+      "score": 9.0,
+      "weight": 0.2,
+      "reasoning": "有实际工程价值，对代码质量提升有帮助"
+    },
+    {
+      "category": "实用性",
+      "score": 7.5,
+      "weight": 0.15,
+      "reasoning": "小规模项目实用，大项目需要优化"
+    },
+    {
+      "category": "易用性",
+      "score": 7.5,
+      "weight": 0.1,
+      "reasoning": "可视化良好，但需要CLI完善"
+    },
+    {
+      "category": "可维护性",
+      "score": 8.0,
+      "weight": 0.1,
+      "reasoning": "代码结构清晰，模块化好"
+    },
+    {
+      "category": "测试完备度",
+      "score": 8.5,
+      "weight": 0.1,
+      "reasoning": "完整的单元/集成/系统测试"
+    },
+    {
+      "category": "文档完整性",
+      "score": 7.0,
+      "weight": 0.1,
+      "reasoning": "基本文档齐全，API文档需要完善"
+    }
+  ],
+  "defects": [
+    {
+      "id": "D-001",
+      "severity": "high",
+      "category": "Scalability",
+      "description": "大规模项目上路径枚举有组合爆炸问题",
+      "location": "分析层",
+      "impact": "在真实大型项目上不实用"
+    },
+    {
+      "id": "D-002",
+      "severity": "medium",
+      "category": "Error Recovery",
+      "description": "单层失败会导致整个流水线停止",
+      "location": "核心引擎",
+      "impact": "流水线脆弱"
+    },
+    {
+      "id": "D-003",
+      "severity": "medium",
+      "category": "Memory",
+      "description": "同时加载所有文件AST，内存占用高",
+      "location": "上下文管理",
+      "impact": "大规模项目内存不足"
+    },
+    {
+      "id": "D-004",
+      "severity": "low",
+      "category": "Documentation",
+      "description": "配置项文档不全",
+      "location": "文档",
+      "impact": "用户体验一般"
+    }
+  ],
+  "optimizations": [
+    {
+      "id": "O-001",
+      "priority": "high",
+      "description": "实现增量分析和分批处理",
+      "expected_impact": "解决规模瓶颈",
+      "estimated_effort": "2周"
+    },
+    {
+      "id": "O-002",
+      "priority": "high",
+      "description": "添加完整的错误恢复机制",
+      "expected_impact": "提高鲁棒性",
+      "estimated_effort": "1周"
+    },
+    {
+      "id": "O-003",
+      "priority": "medium",
+      "description": "完善API文档和使用示例",
+      "expected_impact": "提高易用性",
+      "estimated_effort": "3天"
+    },
+    {
+      "id": "O-004",
+      "priority": "medium",
+      "description": "添加缓存机制避免重复分析",
+      "expected_impact": "提高性能",
+      "estimated_effort": "1周"
+    },
+    {
+      "id": "O-005",
+      "priority": "low",
+      "description": "更多可视化和实时进度",
+      "expected_impact": "改善体验",
+      "estimated_effort": "3天"
+    }
+  ]
+}

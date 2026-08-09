@@ -1,0 +1,118 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "path-test-system"
+version = "3.2.0"
+description = "50层全路径代码测试系统 V3.2 - 高度模块化、企业级产品化"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "PathTestSystem Team", email = "info@pathtestsystem.dev"}
+]
+keywords = ["testing", "code-coverage", "path-analysis", "llm", "automated-testing", "static-analysis"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+dependencies = [
+    "typing-extensions>=4.5.0",
+    "pydantic>=2.5.0",
+    "loguru>=0.7.0",
+    "click>=8.1.0",
+    "rich>=13.5.0",
+    "tqdm>=4.65.0",
+    "pyyaml>=6.0.0",
+    "python-dotenv>=1.0.0",
+    "tenacity>=8.2.0",
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "ast-comments>=1.0.0",
+    "libcst>=1.0.0",
+    "networkx>=3.0.0",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "plotly>=5.15.0",
+    "dash>=2.10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.4.0",
+    "ruff>=0.1.0",
+    "pre-commit>=3.0.0",
+]
+api = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "pydantic-settings>=2.0.0",
+]
+gui = [
+    "streamlit>=1.25.0",
+    "plotly>=5.15.0",
+]
+llm = [
+    "openai>=1.0.0",
+    "openai>=1.0.0",
+    "langchain>=0.1.0",
+]
+all = [
+    "path-test-system[dev,api,gui,llm]",
+]
+
+[project.scripts]
+pathtest = "path_test_system.cli:main"
+pathtest-api = "path_test_system.api_server:run_server"
+pathtest-gui = "path_test_system.gui:main"
+
+[project.urls]
+Homepage = "https://github.com/pathtestsystem/50-layer-path-test"
+Documentation = "https://pathtestsystem.dev/docs"
+Repository = "https://github.com/pathtestsystem/50-layer-path-test"
+Issues = "https://github.com/pathtestsystem/50-layer-path-test/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["path_test_system*"]
+
+[tool.black]
+line-length = 120
+target-version = ["py310", "py311", "py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_functions = "test_*"
+addopts = "-v --cov=path_test_system --cov-report=html --cov-report=term --cov-report=xml"
+norecursedirs = [".git", "__pycache__", ".venv", "venv", "node_modules"]
+
+[tool.ruff]
+line-length = 120
+select = ["E", "F", "W", "I", "N", "UP"]
+ignore = []
+
+[tool.cookiecutter]
+version = "3.2.0"

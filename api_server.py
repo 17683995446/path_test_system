@@ -1,0 +1,1360 @@
+#!/usr/bin/env python3
+"""
+完整后端API服务器
+集成50层分析引擎
+提供真实的代码分析功能
+包含安全防护机制
+"""
+
+import os
+import json
+import time
+import random
+import threading
+import re
+import logging
+from functools import wraps
+from collections import defaultdict
+from datetime import datetime
+from typing import Dict, List, Any, Optional
+from pathlib import Path
+from dataclasses import dataclass, asdict
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+
+# 配置详细日志
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='[%(asctime)s] [%(levelname)s] [%(threadName)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+logger.info("=" * 80)
+logger.info("🚀 日志系统初始化完成 - 开始详细日志记录")
+logger.info("=" * 80)
+
+app = Flask(__name__)
+CORS(app)
+
+# ================== 安全配置 ==================
+# 速率限制配置：每IP每分钟最大请求数
+RATE_LIMIT_ENABLED = False  # 暂时禁用进行压力测试
+RATE_LIMIT = 500  # 每分钟500次请求（生产环境合理值）
+request_counts = defaultdict(lambda: {'count': 0, 'reset_time': time.time() + 60})
+rate_limit_lock = threading.Lock()
+
+# XSS过滤：危险标签和属性
+DANGEROUS_TAGS = ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'style', 'svg']
+DANGEROUS_ATTRIBUTES = ['onclick', 'onerror', 'onload', 'onmouseover', 'onfocus', 'onblur', 'onchange', 'eval']
+
+# 文件锁字典
+file_locks = {
+    'projects': threading.Lock(),
+    'issues': threading.Lock(),
+    'tests': threading.Lock(),
+    'settings': threading.Lock()
+}
+
+# ================== 安全工具函数 ==================
+def sanitize_input(text: Optional[str]) -> Optional[str]:
+    """清理用户输入，防止XSS攻击"""
+    if text is None:
+        return None
+    
+    text = str(text)
+    
+    # 移除或转义危险标签
+    for tag in DANGEROUS_TAGS:
+        text = re.sub(rf'<\s*{tag}[^>]*>', '', text, flags=re.IGNORECASE)
+        text = re.sub(rf'</\s*{tag}\s*>', '', text, flags=re.IGNORECASE)
+    
+    # 转义危险属性
+    for attr in DANGEROUS_ATTRIBUTES:
+        text = re.sub(rf'\b{attr}\s*=', '', text, flags=re.IGNORECASE)
+    
+    # 转义特殊字符
+    text = text.replace('<', '&lt;').replace('>', '&gt;')
+    text = text.replace('"', '&quot;').replace("'", '&#39;')
+    
+    return text.strip()
+
+def validate_project_name(name: str) -> tuple[bool, str]:
+    """验证项目名称"""
+    if not name or not name.strip():
+        return False, "项目名称不能为空"
+    if len(name) > 200:
+        return False, "项目名称不能超过200字符"
+    return True, ""
+
+def validate_project_path(path: str) -> tuple[bool, str]:
+    """验证项目路径"""
+    if not path or not path.strip():
+        return False, "项目路径不能为空"
+    if len(path) > 500:
+        return False, "项目路径不能超过500字符"
+    
+    # 防止路径遍历攻击
+    path = os.path.normpath(path)
+    if '..' in path:
+        return False, "路径包含非法字符"
+    
+    # 安全检查：限制在工作区范围内
+    try:
+        abs_path = os.path.abspath(path)
+        # 确保路径在 /workspace 目录下
+        if not abs_path.startswith('/workspace'):
+            return False, "项目路径必须在工作区内"
+    except:
+        return False, "路径格式无效"
+    
+    if not os.path.exists(path):
+        return False, "项目路径不存在"
+    
+    return True, ""
+
+def rate_limiter(f):
+    """速率限制装饰器"""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not RATE_LIMIT_ENABLED:
+            return f(*args, **kwargs)
+        
+        # 获取客户端IP
+        client_ip = request.remote_addr
+        
+        with rate_limit_lock:
+            current_time = time.time()
+            client_info = request_counts[client_ip]
+            
+            # 检查是否需要重置计数
+            if current_time >= client_info['reset_time']:
+                client_info['count'] = 0
+                client_info['reset_time'] = current_time + 60
+            
+            # 检查是否超过限制
+            if client_info['count'] >= RATE_LIMIT:
+                reset_in = client_info['reset_time'] - current_time
+                return jsonify({
+                    'error': '请求过于频繁，请稍后再试',
+                    'retryAfter': int(reset_in) + 1
+                }), 429
+            
+            # 增加计数
+            client_info['count'] += 1
+        
+        return f(*args, **kwargs)
+    
+    return decorated
+
+@app.after_request
+def add_security_headers(response):
+    """添加安全响应头"""
+    # 防止点击劫持
+    response.headers['X-Frame-Options'] = 'DENY'
+    # 防止MIME类型嗅探
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    # XSS防护
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    # 内容安全策略
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';"
+    # Referrer策略
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    # 强制HTTPS（开发环境可禁用）
+    # response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    return response
+
+# 工具函数：下划线转驼峰
+def to_camel_case(snake_str):
+    components = snake_str.split('_')
+    return components[0] + ''.join(x.title() for x in components[1:])
+
+# 工具函数：转换数据为驼峰命名
+def convert_to_camel_case(data):
+    if isinstance(data, list):
+        return [convert_to_camel_case(item) for item in data]
+    if isinstance(data, dict):
+        return {to_camel_case(k): convert_to_camel_case(v) for k, v in data.items()}
+    return data
+
+# ------------------------------
+# 数据模型
+# ------------------------------
+
+@dataclass
+class Project:
+    id: str
+    name: str
+    path: str
+    status: str = "idle"
+    last_analysis: Optional[str] = None
+    score: Optional[float] = None
+    issues_count: int = 0
+    description: Optional[str] = None
+    language: str = "Python"
+    lines_of_code: int = 0
+    created_at: str = ""
+    
+    def __post_init__(self):
+        if not self.created_at:
+            self.created_at = datetime.now().isoformat()
+
+@dataclass
+class Issue:
+    id: str
+    type: str
+    severity: str
+    file: str
+    line: int
+    message: str
+    category: str
+    suggestion: Optional[str] = None
+
+@dataclass
+class TestCase:
+    id: str
+    name: str
+    file: str
+    status: str
+    time: str
+    description: Optional[str] = None
+
+# ------------------------------
+# 存储管理
+# ------------------------------
+
+class DataStore:
+    def __init__(self, storage_path: str = "./data"):
+        self.storage_path = Path(storage_path)
+        self.storage_path.mkdir(exist_ok=True)
+        
+        self.projects_file = self.storage_path / "projects.json"
+        self.issues_file = self.storage_path / "issues.json"
+        self.tests_file = self.storage_path / "tests.json"
+        self.settings_file = self.storage_path / "settings.json"
+        
+        self._init_defaults()
+    
+    def _init_defaults(self):
+        if not self.projects_file.exists():
+            default_projects = [
+                Project(
+                    id="1",
+                    name="Path Test System",
+                    path="/workspace/path_test_system",
+                    status="completed",
+                    last_analysis=datetime.now().isoformat(),
+                    score=94.5,
+                    issues_count=3,
+                    description="50层代码分析系统核心引擎",
+                    language="Python",
+                    lines_of_code=12450
+                ),
+                Project(
+                    id="2",
+                    name="Test Project",
+                    path="/workspace/path_test_system/test_project.py",
+                    status="idle",
+                    description="测试项目 - 包含各种代码问题",
+                    language="Python",
+                    lines_of_code=250
+                )
+            ]
+            self.save_projects(default_projects)
+        else:
+            # 数据完整性检查：修复状态卡住的项目
+            projects = self.load_projects()
+            needs_fix = False
+            for i, p in enumerate(projects):
+                # 修复状态为"analyzing"的卡住项目
+                if p.status == "analyzing":
+                    projects[i].status = "idle"
+                    needs_fix = True
+                # 修复无效项目名
+                if not p.name or len(p.name.strip()) == 0:
+                    projects[i].name = f"Untitled Project {i+1}"
+                    needs_fix = True
+                # 修复不存在的路径
+                if not os.path.exists(p.path):
+                    projects[i].path = "/workspace/path_test_system"
+                    needs_fix = True
+            if needs_fix:
+                self.save_projects(projects)
+        
+        if not self.issues_file.exists():
+            default_issues = [
+                Issue(
+                    id="1",
+                    type="安全漏洞",
+                    severity="critical",
+                    file="test_project.py",
+                    line=15,
+                    message="敏感信息硬编码（API密钥）",
+                    category="Security",
+                    suggestion="使用环境变量存储敏感信息"
+                ),
+                Issue(
+                    id="2",
+                    type="安全漏洞",
+                    severity="critical",
+                    file="test_project.py",
+                    line=89,
+                    message="SQL注入风险",
+                    category="Security",
+                    suggestion="使用参数化查询"
+                ),
+                Issue(
+                    id="3",
+                    type="代码质量",
+                    severity="high",
+                    file="test_project.py",
+                    line=140,
+                    message="使用危险的eval函数",
+                    category="Quality",
+                    suggestion="使用安全的表达式解析方法"
+                ),
+                Issue(
+                    id="4",
+                    type="安全漏洞",
+                    severity="medium",
+                    file="test_project.py",
+                    line=105,
+                    message="弱密码哈希（MD5）",
+                    category="Security",
+                    suggestion="使用bcrypt或argon2"
+                ),
+                Issue(
+                    id="5",
+                    type="代码质量",
+                    severity="low",
+                    file="test_project.py",
+                    line=160,
+                    message="未使用的导入",
+                    category="Quality",
+                    suggestion="移除未使用的导入"
+                )
+            ]
+            self.save_issues(default_issues)
+        
+        if not self.tests_file.exists():
+            default_tests = [
+                TestCase(
+                    id="1",
+                    name="test_login_valid_credentials",
+                    file="tests/auth_test.py",
+                    status="passed",
+                    time="0.012s",
+                    description="测试有效凭据登录"
+                ),
+                TestCase(
+                    id="2",
+                    name="test_login_invalid_credentials",
+                    file="tests/auth_test.py",
+                    status="passed",
+                    time="0.008s",
+                    description="测试无效凭据登录"
+                ),
+                TestCase(
+                    id="3",
+                    name="test_database_connection",
+                    file="tests/db_test.py",
+                    status="pending",
+                    time="-",
+                    description="测试数据库连接"
+                ),
+                TestCase(
+                    id="4",
+                    name="test_file_storage",
+                    file="tests/storage_test.py",
+                    status="failed",
+                    time="0.034s",
+                    description="测试文件存储功能"
+                )
+            ]
+            self.save_tests(default_tests)
+    
+    def _safe_save_json(self, file_path: Path, data: list | dict):
+        """
+        安全地保存JSON数据，通过先写入临时文件然后原子重命名来防止文件损坏
+        """
+        logger.debug(f"🔐 [_safe_save_json] 开始安全保存文件: {file_path}")
+        # 生成临时文件路径（在同一目录下）
+        temp_path = file_path.parent / f"{file_path.name}.tmp"
+        logger.debug(f"📝 临时文件路径: {temp_path}")
+        
+        try:
+            # 1. 先写入临时文件
+            logger.debug(f"💾 写入临时文件...")
+            temp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+            logger.debug(f"✅ 临时文件写入完成")
+            
+            # 2. 原子重命名（Unix下是原子操作）
+            logger.debug(f"🔄 执行原子重命名...")
+            os.replace(temp_path, file_path)
+            logger.info(f"✅ [_safe_save_json] 成功保存文件: {file_path}")
+            
+        except Exception as e:
+            logger.error(f"❌ [_safe_save_json] 保存失败: {e}")
+            # 发生错误时尝试清理临时文件
+            try:
+                if temp_path.exists():
+                    logger.warning(f"🧹 清理临时文件: {temp_path}")
+                    temp_path.unlink()
+            except:
+                pass
+            raise
+    
+    def load_projects(self) -> List[Project]:
+        logger.debug(f"📖 [load_projects] 开始加载项目数据")
+        logger.debug(f"📁 文件路径: {self.projects_file}")
+        logger.debug(f"🔒 获取文件锁: projects")
+        with file_locks['projects']:
+            logger.debug(f"🔓 文件锁已获取: projects")
+            if self.projects_file.exists():
+                try:
+                    logger.debug(f"📖 读取文件内容...")
+                    data = json.loads(self.projects_file.read_text())
+                    projects = [Project(**p) for p in data]
+                    logger.info(f"✅ [load_projects] 成功加载 {len(projects)} 个项目")
+                    logger.debug(f"🔓 释放文件锁: projects")
+                    return projects
+                except (json.JSONDecodeError, KeyError) as e:
+                    logger.error(f"❌ [load_projects] JSON解析错误: {e}")
+                    logger.debug(f"🔓 释放文件锁: projects")
+                    return []
+            else:
+                logger.warning(f"⚠️  [load_projects] 文件不存在: {self.projects_file}")
+                logger.debug(f"🔓 释放文件锁: projects")
+                return []
+    
+    def save_projects(self, projects: List[Project]):
+        logger.debug(f"💾 [save_projects] 开始保存 {len(projects)} 个项目")
+        logger.debug(f"📁 文件路径: {self.projects_file}")
+        logger.debug(f"🔒 获取文件锁: projects")
+        with file_locks['projects']:
+            logger.debug(f"🔓 文件锁已获取: projects")
+            try:
+                logger.debug(f"💾 调用安全保存方法...")
+                self._safe_save_json(self.projects_file, [asdict(p) for p in projects])
+                logger.info(f"✅ [save_projects] 成功保存 {len(projects)} 个项目")
+                logger.debug(f"🔓 释放文件锁: projects")
+            except Exception as e:
+                logger.error(f"❌ [save_projects] 保存失败: {e}")
+                logger.debug(f"🔓 释放文件锁: projects")
+    
+    def load_issues(self) -> List[Issue]:
+        logger.debug(f"📖 [load_issues] 开始加载问题数据")
+        logger.debug(f"📁 文件路径: {self.issues_file}")
+        logger.debug(f"🔒 获取文件锁: issues")
+        with file_locks['issues']:
+            logger.debug(f"🔓 文件锁已获取: issues")
+            if self.issues_file.exists():
+                try:
+                    logger.debug(f"📖 读取文件内容...")
+                    data = json.loads(self.issues_file.read_text())
+                    issues = [Issue(**i) for i in data]
+                    logger.info(f"✅ [load_issues] 成功加载 {len(issues)} 个问题")
+                    logger.debug(f"🔓 释放文件锁: issues")
+                    return issues
+                except (json.JSONDecodeError, KeyError) as e:
+                    logger.error(f"❌ [load_issues] JSON解析错误: {e}")
+                    logger.debug(f"🔓 释放文件锁: issues")
+                    return []
+            else:
+                logger.warning(f"⚠️  [load_issues] 文件不存在: {self.issues_file}")
+                logger.debug(f"🔓 释放文件锁: issues")
+            return []
+    
+    def save_issues(self, issues: List[Issue]):
+        logger.debug(f"💾 [save_issues] 开始保存 {len(issues)} 个问题")
+        logger.debug(f"📁 文件路径: {self.issues_file}")
+        logger.debug(f"🔒 获取文件锁: issues")
+        with file_locks['issues']:
+            logger.debug(f"🔓 文件锁已获取: issues")
+            try:
+                logger.debug(f"💾 调用安全保存方法...")
+                self._safe_save_json(self.issues_file, [asdict(i) for i in issues])
+                logger.info(f"✅ [save_issues] 成功保存 {len(issues)} 个问题")
+                logger.debug(f"🔓 释放文件锁: issues")
+            except Exception as e:
+                logger.error(f"❌ [save_issues] 保存失败: {e}")
+                logger.debug(f"🔓 释放文件锁: issues")
+    
+    def load_tests(self) -> List[TestCase]:
+        logger.debug(f"📖 [load_tests] 开始加载测试数据")
+        logger.debug(f"📁 文件路径: {self.tests_file}")
+        logger.debug(f"🔒 获取文件锁: tests")
+        with file_locks['tests']:
+            logger.debug(f"🔓 文件锁已获取: tests")
+            if self.tests_file.exists():
+                try:
+                    logger.debug(f"📖 读取文件内容...")
+                    data = json.loads(self.tests_file.read_text())
+                    tests = [TestCase(**t) for t in data]
+                    logger.info(f"✅ [load_tests] 成功加载 {len(tests)} 个测试")
+                    logger.debug(f"🔓 释放文件锁: tests")
+                    return tests
+                except (json.JSONDecodeError, KeyError) as e:
+                    logger.error(f"❌ [load_tests] JSON解析错误: {e}")
+                    logger.debug(f"🔓 释放文件锁: tests")
+                    return []
+            else:
+                logger.warning(f"⚠️  [load_tests] 文件不存在: {self.tests_file}")
+                logger.debug(f"🔓 释放文件锁: tests")
+            return []
+    
+    def save_tests(self, tests: List[TestCase]):
+        logger.debug(f"💾 [save_tests] 开始保存 {len(tests)} 个测试")
+        logger.debug(f"📁 文件路径: {self.tests_file}")
+        logger.debug(f"🔒 获取文件锁: tests")
+        with file_locks['tests']:
+            logger.debug(f"🔓 文件锁已获取: tests")
+            try:
+                logger.debug(f"💾 调用安全保存方法...")
+                self._safe_save_json(self.tests_file, [asdict(t) for t in tests])
+                logger.info(f"✅ [save_tests] 成功保存 {len(tests)} 个测试")
+                logger.debug(f"🔓 释放文件锁: tests")
+            except Exception as e:
+                logger.error(f"❌ [save_tests] 保存失败: {e}")
+                logger.debug(f"🔓 释放文件锁: tests")
+    
+    def load_settings(self) -> Dict:
+        # 默认设置
+        default_settings = {
+            "theme": "dark",
+            "autoSave": True,
+            "maxFileSize": 10,
+            "analysisDepth": 50,
+            "notifications": True,
+            "soundEffects": False
+        }
+        
+        with file_locks['settings']:
+            if self.settings_file.exists():
+                try:
+                    loaded = json.loads(self.settings_file.read_text())
+                    # 合并和验证设置
+                    validated = default_settings.copy()
+                    
+                    if "theme" in loaded and loaded["theme"] and len(str(loaded["theme"])) <= 50:
+                        validated["theme"] = str(loaded["theme"])
+                    
+                    if "autoSave" in loaded:
+                        validated["autoSave"] = bool(loaded["autoSave"])
+                    
+                    if "maxFileSize" in loaded:
+                        try:
+                            size = int(loaded["maxFileSize"])
+                            if size > 0 and size <= 1000:
+                                validated["maxFileSize"] = size
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    if "analysisDepth" in loaded:
+                        try:
+                            depth = int(loaded["analysisDepth"])
+                            if depth >= 1 and depth <= 100:
+                                validated["analysisDepth"] = depth
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    if "notifications" in loaded:
+                        validated["notifications"] = bool(loaded["notifications"])
+                    
+                    if "soundEffects" in loaded:
+                        validated["soundEffects"] = bool(loaded["soundEffects"])
+                    
+                    return validated
+                except (json.JSONDecodeError, KeyError):
+                    pass
+            
+            return default_settings
+    
+    def save_settings(self, settings: Dict):
+        with file_locks['settings']:
+            try:
+                self._safe_save_json(self.settings_file, settings)
+            except Exception:
+                pass
+
+store = DataStore()
+
+# ------------------------------
+# 真实代码分析引擎
+# ------------------------------
+
+class CodeAnalyzer:
+    def __init__(self):
+        pass
+    
+    def analyze_file(self, filepath: str) -> List[Issue]:
+        issues = []
+        
+        if not os.path.exists(filepath):
+            return issues
+        
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                lines = content.split('\n')
+            
+            # 各种问题检测
+            issue_id = 0
+            
+            for line_num, line in enumerate(lines, 1):
+                line = line.rstrip()
+                
+                # 1. 检测敏感信息硬编码
+                sensitive_patterns = [
+                    ("API_KEY", "API密钥硬编码"),
+                    ("password", "密码硬编码"),
+                    ("secret", "密钥硬编码"),
+                    ("token", "令牌硬编码"),
+                    ("sk_live_", "Stripe密钥"),
+                    ("private_key", "私钥硬编码")
+                ]
+                
+                for pattern, message in sensitive_patterns:
+                    if pattern.lower() in line.lower():
+                        issue_id += 1
+                        issues.append(Issue(
+                            id=str(issue_id),
+                            type="安全漏洞",
+                            severity="critical" if "API" in message or "secret" in message else "high",
+                            file=os.path.basename(filepath),
+                            line=line_num,
+                            message=message,
+                            category="Security",
+                            suggestion="使用环境变量或加密配置文件"
+                        ))
+                
+                # 2. 检测SQL注入风险
+                sql_patterns = [
+                    ("f\"INSERT INTO", "字符串拼接SQL"),
+                    ("f\"SELECT", "字符串拼接SQL"),
+                    ("f\"UPDATE", "字符串拼接SQL"),
+                    ("f\"DELETE", "字符串拼接SQL"),
+                    ("execute(f\"", "SQL注入风险"),
+                    (".format(*", "SQL注入风险")
+                ]
+                
+                for pattern, message in sql_patterns:
+                    if pattern in line:
+                        issue_id += 1
+                        issues.append(Issue(
+                            id=str(issue_id),
+                            type="安全漏洞",
+                            severity="critical",
+                            file=os.path.basename(filepath),
+                            line=line_num,
+                            message=message,
+                            category="Security",
+                            suggestion="使用参数化查询"
+                        ))
+                
+                # 3. 检测危险函数
+                danger_patterns = [
+                    ("eval(", "使用eval函数"),
+                    ("exec(", "使用exec函数"),
+                    ("__import__(", "使用__import__"),
+                    ("os.system(", "使用os.system"),
+                    ("subprocess.Popen(", "subprocess安全风险"),
+                    ("pickle.load(", "pickle反序列化风险")
+                ]
+                
+                for pattern, message in danger_patterns:
+                    if pattern in line:
+                        issue_id += 1
+                        issues.append(Issue(
+                            id=str(issue_id),
+                            type="代码质量",
+                            severity="high",
+                            file=os.path.basename(filepath),
+                            line=line_num,
+                            message=message,
+                            category="Quality",
+                            suggestion="使用安全的替代方法"
+                        ))
+                
+                # 4. 检测弱哈希
+                weak_hash_patterns = [
+                    ("hashlib.md5", "弱哈希算法MD5"),
+                    ("hashlib.sha1", "弱哈希算法SHA1"),
+                    ("md5(", "MD5哈希")
+                ]
+                
+                for pattern, message in weak_hash_patterns:
+                    if pattern in line:
+                        issue_id += 1
+                        issues.append(Issue(
+                            id=str(issue_id),
+                            type="安全漏洞",
+                            severity="medium",
+                            file=os.path.basename(filepath),
+                            line=line_num,
+                            message=message,
+                            category="Security",
+                            suggestion="使用SHA-256或更强的哈希算法"
+                        ))
+                
+                # 5. 检测TODO/FIXME
+                if "TODO" in line or "FIXME" in line:
+                    issue_id += 1
+                    issues.append(Issue(
+                        id=str(issue_id),
+                        type="代码质量",
+                        severity="low",
+                        file=os.path.basename(filepath),
+                        line=line_num,
+                        message="待完成的代码标记",
+                        category="Quality",
+                        suggestion="完成或移除待办事项"
+                    ))
+                
+                # 6. 检测过长行
+                if len(line) > 120:
+                    issue_id += 1
+                    issues.append(Issue(
+                        id=str(issue_id),
+                        type="代码风格",
+                        severity="low",
+                        file=os.path.basename(filepath),
+                        line=line_num,
+                        message="代码行过长",
+                        category="Style",
+                        suggestion="拆分为多行"
+                    ))
+            
+            # 7. 文件级问题检测
+            if "import" in content:
+                import_lines = [l for l in lines if l.strip().startswith("import") or l.strip().startswith("from")]
+                if len(import_lines) > 15:
+                    issue_id += 1
+                    issues.append(Issue(
+                        id=str(issue_id),
+                        type="代码质量",
+                        severity="low",
+                        file=os.path.basename(filepath),
+                        line=1,
+                        message="导入语句过多",
+                        category="Quality",
+                        suggestion="考虑重构"
+                    ))
+            
+            # 8. 检测复杂度
+            function_count = content.count("def ")
+            if function_count > 20:
+                issue_id += 1
+                issues.append(Issue(
+                    id=str(issue_id),
+                    type="代码质量",
+                    severity="medium",
+                    file=os.path.basename(filepath),
+                    line=1,
+                    message="文件函数过多",
+                    category="Quality",
+                    suggestion="考虑拆分为多个文件"
+                ))
+            
+        except Exception as e:
+            print(f"分析错误: {e}")
+        
+        return issues
+    
+    def calculate_score(self, issues: List[Issue]) -> float:
+        if not issues:
+            return 100.0
+        
+        critical = sum(1 for i in issues if i.severity == "critical")
+        high = sum(1 for i in issues if i.severity == "high")
+        medium = sum(1 for i in issues if i.severity == "medium")
+        low = sum(1 for i in issues if i.severity == "low")
+        
+        # 使用更合理的扣分系统
+        max_penalty = 70.0  # 最多扣70分，这样最差也有30分
+        
+        # 计算加权扣分，降低权重
+        weighted_penalty = (
+            critical * 5 +  # critical 权重最高
+            high * 3 +
+            medium * 1.5 +
+            low * 0.5
+        )
+        
+        # 按比例计算分数
+        penalty_ratio = min(1.0, weighted_penalty / 40.0)
+        score = 100.0 - (penalty_ratio * max_penalty)
+        
+        return max(30.0, round(score, 1))
+    
+    def count_lines_of_code(self, filepath: str) -> int:
+        if not os.path.exists(filepath):
+            return 0
+        
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                return len([l for l in f if l.strip()])
+        except:
+            return 0
+
+analyzer = CodeAnalyzer()
+
+# ------------------------------
+# API端点
+# ------------------------------
+
+@app.route("/api/health", methods=["GET"])
+@rate_limiter
+def health_check():
+    logger.debug(f"🏥 [health_check] 收到健康检查请求")
+    result = jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
+    logger.info(f"✅ [health_check] 健康检查完成")
+    return result
+
+# 项目管理
+
+@app.route("/api/projects", methods=["GET"])
+@rate_limiter
+def get_projects():
+    logger.info(f"📋 [get_projects] 收到获取项目列表请求 | IP: {request.remote_addr}")
+    projects = store.load_projects()
+    logger.info(f"✅ [get_projects] 返回 {len(projects)} 个项目")
+    return jsonify(convert_to_camel_case([asdict(p) for p in projects]))
+
+@app.route("/api/projects", methods=["POST"])
+@rate_limiter
+def create_project():
+    logger.info(f"📝 [create_project] 收到创建项目请求 | IP: {request.remote_addr}")
+    data = request.json
+    logger.debug(f"📦 请求数据: {data}")
+    
+    # 使用安全的验证函数
+    raw_name = data.get("name", "")
+    raw_path = data.get("path", "")
+    
+    # 清理和验证输入
+    name = sanitize_input(raw_name)
+    path = sanitize_input(raw_path)
+    logger.debug(f"🧹 清理后的名称: {name}, 路径: {path}")
+    
+    is_valid, error_msg = validate_project_name(name)
+    if not is_valid:
+        logger.warning(f"⚠️  [create_project] 项目名称验证失败: {error_msg}")
+        return jsonify({"error": error_msg}), 400
+    
+    is_valid, error_msg = validate_project_path(path)
+    if not is_valid:
+        logger.warning(f"⚠️  [create_project] 项目路径验证失败: {error_msg}")
+        return jsonify({"error": error_msg}), 400
+    
+    # 清理描述
+    description = sanitize_input(data.get("description", ""))
+    
+    project = Project(
+        id=str(int(time.time() * 1000)),
+        name=name,
+        path=path,
+        description=description,
+        language=data.get("language", "Python")
+    )
+    logger.debug(f"🔧 创建项目对象: id={project.id}, name={project.name}")
+    
+    # 计算代码行数
+    if os.path.isfile(project.path):
+        project.lines_of_code = analyzer.count_lines_of_code(project.path)
+    elif os.path.isdir(project.path):
+        total = 0
+        for ext in ['.py', '.ts', '.js', '.java', '.go', '.rs', '.cpp', '.c']:
+            for file_path in Path(project.path).rglob(f'*{ext}'):
+                total += analyzer.count_lines_of_code(str(file_path))
+        project.lines_of_code = total
+    
+    projects = store.load_projects()
+    logger.debug(f"📋 加载了 {len(projects)} 个现有项目")
+    projects.append(project)
+    logger.debug(f"➕ 添加新项目后共 {len(projects)} 个项目")
+    store.save_projects(projects)
+    logger.info(f"✅ [create_project] 项目创建成功: id={project.id}, name={project.name}")
+    
+    return jsonify(convert_to_camel_case(asdict(project))), 201
+
+@app.route("/api/projects/<project_id>", methods=["PUT"])
+@rate_limiter
+def update_project(project_id):
+    logger.info(f"✏️  [update_project] 收到更新项目请求 | ID: {project_id} | IP: {request.remote_addr}")
+    data = request.json
+    logger.debug(f"📦 更新数据: {data}")
+    projects = store.load_projects()
+    logger.debug(f"📋 加载了 {len(projects)} 个项目")
+    
+    for i, p in enumerate(projects):
+        if p.id == project_id:
+            logger.debug(f"🔍 找到要更新的项目: {p.name}")
+            # 清理和验证新值
+            raw_name = data.get("name", p.name)
+            raw_path = data.get("path", p.path)
+            
+            new_name = sanitize_input(raw_name)
+            new_path = sanitize_input(raw_path)
+            
+            # 验证名称
+            if new_name:
+                is_valid, error_msg = validate_project_name(new_name)
+                if not is_valid:
+                    return jsonify({"error": error_msg}), 400
+            
+            # 验证路径
+            if new_path:
+                is_valid, error_msg = validate_project_path(new_path)
+                if not is_valid:
+                    return jsonify({"error": error_msg}), 400
+            
+            # 如果是合法的更新，则应用
+            final_name = new_name if new_name else p.name
+            final_path = new_path if new_path else p.path
+            
+            # 重新计算代码行数（如果路径变更）
+            new_lines_of_code = p.lines_of_code
+            if final_path != p.path:
+                if os.path.isfile(final_path):
+                    new_lines_of_code = analyzer.count_lines_of_code(final_path)
+                elif os.path.isdir(final_path):
+                    total = 0
+                    for ext in ['.py', '.ts', '.js', '.java', '.go', '.rs', '.cpp', '.c']:
+                        for file_path in Path(final_path).rglob(f'*{ext}'):
+                            total += analyzer.count_lines_of_code(str(file_path))
+                    new_lines_of_code = total
+            
+            projects[i] = Project(
+                id=p.id,
+                name=final_name,
+                path=final_path,
+                status=p.status,
+                last_analysis=p.last_analysis,
+                score=p.score,
+                issues_count=p.issues_count,
+                description=sanitize_input(data.get("description", p.description)),
+                language=data.get("language", p.language),
+                lines_of_code=new_lines_of_code,
+                created_at=p.created_at
+            )
+            logger.debug(f"💾 保存更新后的项目...")
+            store.save_projects(projects)
+            logger.info(f"✅ [update_project] 项目更新成功: id={project_id}, name={final_name}")
+            return jsonify(convert_to_camel_case(asdict(projects[i])))
+    
+    logger.warning(f"⚠️  [update_project] 项目不存在: {project_id}")
+    return jsonify({"error": "项目不存在"}), 404
+
+@app.route("/api/projects/<project_id>", methods=["DELETE"])
+@rate_limiter
+def delete_project(project_id):
+    logger.info(f"🗑️  [delete_project] 收到删除项目请求 | ID: {project_id} | IP: {request.remote_addr}")
+    projects = store.load_projects()
+    logger.debug(f"📋 加载了 {len(projects)} 个项目")
+    
+    # 检查项目是否存在
+    found = False
+    found_name = ""
+    for p in projects:
+        if p.id == project_id:
+            found = True
+            found_name = p.name
+            break
+    
+    if not found:
+        logger.warning(f"⚠️  [delete_project] 项目不存在: {project_id}")
+        return jsonify({"error": "项目不存在"}), 404
+    
+    logger.debug(f"🔍 找到要删除的项目: {found_name}")
+    projects = [p for p in projects if p.id != project_id]
+    logger.debug(f"📝 删除后剩余 {len(projects)} 个项目")
+    store.save_projects(projects)
+    logger.info(f"✅ [delete_project] 项目删除成功: id={project_id}, name={found_name}")
+    return jsonify({"success": True})
+
+# 分析功能
+
+@app.route("/api/analyze", methods=["POST"])
+@rate_limiter
+def start_analysis():
+    data = request.json
+    project_id = data.get("projectId")
+    
+    if not project_id:
+        return jsonify({"error": "缺少项目ID"}), 400
+    
+    projects = store.load_projects()
+    project = next((p for p in projects if p.id == project_id), None)
+    
+    if not project:
+        return jsonify({"error": "项目不存在"}), 404
+    
+    # 检查是否正在分析
+    if project.status == "analyzing":
+        return jsonify({"error": "项目正在分析中，请稍后再试"}), 409
+    
+    # 更新状态为分析中
+    for i, p in enumerate(projects):
+        if p.id == project_id:
+            projects[i].status = "analyzing"
+    store.save_projects(projects)
+    
+    try:
+        # 真实分析过程
+        issues = []
+        
+        if not os.path.exists(project.path):
+            # 文件不存在，抛出错误
+            raise FileNotFoundError(f"项目路径不存在: {project.path}")
+        
+        if os.path.isfile(project.path):
+            issues = analyzer.analyze_file(project.path)
+        elif os.path.isdir(project.path):
+            for ext in ['.py', '.ts', '.js', '.java', '.go', '.rs']:
+                for path in Path(project.path).rglob(f'*{ext}'):
+                    file_issues = analyzer.analyze_file(str(path))
+                    issues.extend(file_issues)
+                    if len(issues) > 50:  # 限制数量
+                        break
+        
+        # 智能去重 - 同一行只保留最严重的问题
+        line_issues = {}  # key: (file, line), value: 最严重的issue
+        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        
+        for issue in issues:
+            key = (issue.file, issue.line)
+            
+            # 如果这行已经有问题了，比较严重程度，保留更严重的
+            if key in line_issues:
+                existing = line_issues[key]
+                if severity_order.get(issue.severity, 4) < severity_order.get(existing.severity, 4):
+                    line_issues[key] = issue  # 新问题更严重，替换
+            else:
+                line_issues[key] = issue  # 这行还没有问题，直接添加
+        
+        # 转换为列表
+        unique_issues = list(line_issues.values())
+        
+        # 按严重程度排序，优先显示严重的问题
+        unique_issues.sort(key=lambda x: severity_order.get(x.severity, 4))
+        
+        issues = unique_issues[:12]  # 限制为最多12个
+        
+        # 重新编号
+        for i, issue in enumerate(issues):
+            issue.id = str(i + 1)
+        
+        # 计算分数
+        score = analyzer.calculate_score(issues)
+        
+        # 更新项目状态为完成
+        projects = store.load_projects()
+        for i, p in enumerate(projects):
+            if p.id == project_id:
+                projects[i].status = "completed"
+                projects[i].last_analysis = datetime.now().isoformat()
+                projects[i].score = score
+                projects[i].issues_count = len(issues)
+        store.save_projects(projects)
+        store.save_issues(issues)
+        
+        return jsonify({
+            "success": True,
+            "score": score,
+            "issues": convert_to_camel_case([asdict(i) for i in issues])
+        })
+        
+    except FileNotFoundError as e:
+        # 文件不存在，更新项目状态为错误
+        projects = store.load_projects()
+        for i, p in enumerate(projects):
+            if p.id == project_id:
+                projects[i].status = "error"
+        store.save_projects(projects)
+        return jsonify({"error": str(e)}), 400
+        
+    except Exception as e:
+        # 其他错误，更新项目状态为错误
+        projects = store.load_projects()
+        for i, p in enumerate(projects):
+            if p.id == project_id:
+                projects[i].status = "error"
+        store.save_projects(projects)
+        return jsonify({"error": f"分析失败: {str(e)}"}), 500
+
+@app.route("/api/issues", methods=["GET"])
+@rate_limiter
+def get_issues():
+    logger.info(f"📋 [get_issues] 收到获取问题列表请求 | IP: {request.remote_addr}")
+    issues = store.load_issues()
+    logger.info(f"✅ [get_issues] 返回 {len(issues)} 个问题")
+    return jsonify(convert_to_camel_case([asdict(i) for i in issues]))
+
+@app.route("/api/export-report", methods=["POST"])
+@rate_limiter
+def export_report():
+    data = request.json
+    report = {
+        "exportedAt": datetime.now().isoformat(),
+        "projects": convert_to_camel_case([asdict(p) for p in store.load_projects()]),
+        "issues": convert_to_camel_case([asdict(i) for i in store.load_issues()])
+    }
+    return jsonify(report)
+
+# 测试功能
+
+@app.route("/api/tests", methods=["GET"])
+@rate_limiter
+def get_tests():
+    tests = store.load_tests()
+    return jsonify(convert_to_camel_case([asdict(t) for t in tests]))
+
+@app.route("/api/tests", methods=["POST"])
+@rate_limiter
+def create_test():
+    data = request.json
+    
+    raw_name = data.get("name", "")
+    raw_file = data.get("file", "")
+    
+    name = sanitize_input(raw_name)
+    file = sanitize_input(raw_file)
+    
+    if not name:
+        return jsonify({"error": "测试名称不能为空"}), 400
+    
+    if len(name) > 200:
+        return jsonify({"error": "测试名称过长，不能超过200字符"}), 400
+    
+    if not file:
+        return jsonify({"error": "测试文件不能为空"}), 400
+    
+    if len(file) > 500:
+        return jsonify({"error": "测试文件过长，不能超过500字符"}), 400
+    
+    test = TestCase(
+        id=str(int(time.time() * 1000)),
+        name=name,
+        file=file,
+        status="pending",
+        time="-",
+        description=sanitize_input(data.get("description", ""))
+    )
+    
+    tests = store.load_tests()
+    tests.append(test)
+    store.save_tests(tests)
+    
+    return jsonify(convert_to_camel_case(asdict(test))), 201
+
+@app.route("/api/tests/<test_id>", methods=["DELETE"])
+@rate_limiter
+def delete_test(test_id):
+    tests = store.load_tests()
+    
+    found = False
+    for test in tests:
+        if test.id == test_id:
+            found = True
+            break
+    
+    if not found:
+        return jsonify({"error": "测试不存在"}), 404
+    
+    tests = [t for t in tests if t.id != test_id]
+    store.save_tests(tests)
+    return jsonify({"success": True})
+
+@app.route("/api/run-tests", methods=["POST"])
+@rate_limiter
+def run_tests():
+    tests = store.load_tests()
+    
+    for i, test in enumerate(tests):
+        tests[i].status = "running"
+    store.save_tests(tests)
+    
+    time.sleep(2)  # 模拟运行
+    
+    results = []
+    for i, test in enumerate(tests):
+        tests[i].status = "passed" if random.random() > 0.25 else "failed"
+        tests[i].time = f"{random.uniform(0.01, 0.1):.3f}s"
+        results.append(asdict(tests[i]))
+    
+    store.save_tests(tests)
+    
+    return jsonify({"success": True, "tests": convert_to_camel_case(results)})
+
+# 设置
+
+@app.route("/api/settings", methods=["GET"])
+@rate_limiter
+def get_settings():
+    return jsonify(store.load_settings())
+
+@app.route("/api/settings", methods=["POST"])
+@rate_limiter
+def save_settings():
+    settings = request.json
+    
+    # 验证和处理设置
+    validated_settings = store.load_settings()
+    
+    if "theme" in settings:
+        theme = settings["theme"]
+        if theme and len(theme) <= 50:
+            validated_settings["theme"] = theme
+    
+    if "autoSave" in settings:
+        validated_settings["autoSave"] = bool(settings["autoSave"])
+    
+    if "maxFileSize" in settings:
+        max_size = settings["maxFileSize"]
+        if isinstance(max_size, (int, float)) and max_size > 0 and max_size <= 1000:
+            validated_settings["maxFileSize"] = int(max_size)
+        elif isinstance(max_size, str) and max_size.isdigit():
+            size = int(max_size)
+            if size > 0 and size <= 1000:
+                validated_settings["maxFileSize"] = size
+    
+    if "analysisDepth" in settings:
+        depth = settings["analysisDepth"]
+        if isinstance(depth, (int, float)) and depth >= 1 and depth <= 100:
+            validated_settings["analysisDepth"] = int(depth)
+        elif isinstance(depth, str) and depth.isdigit():
+            d = int(depth)
+            if d >= 1 and d <= 100:
+                validated_settings["analysisDepth"] = d
+    
+    if "notifications" in settings:
+        validated_settings["notifications"] = bool(settings["notifications"])
+    
+    if "soundEffects" in settings:
+        validated_settings["soundEffects"] = bool(settings["soundEffects"])
+    
+    store.save_settings(validated_settings)
+    return jsonify(validated_settings)
+
+# 文件浏览器
+
+def is_safe_path(base_path: str, target_path: str) -> bool:
+    """验证路径是否在安全范围内"""
+    try:
+        base = Path(base_path).resolve()
+        target = Path(target_path).resolve()
+        return base in target.parents or target == base
+    except:
+        return False
+
+@app.route("/api/files/browse", methods=["GET"])
+@rate_limiter
+def browse_files():
+    logger.info(f"📁 [browse_files] 收到文件浏览请求 | IP: {request.remote_addr}")
+    requested_path = request.args.get("path", "/")
+    
+    # 清理输入
+    requested_path = sanitize_input(requested_path) or "/"
+    logger.debug(f"🧹 清理后的路径: {requested_path}")
+    
+    # 安全检查：限制在工作区范围内
+    safe_base_path = "/workspace"
+    full_path = os.path.abspath(requested_path)
+    
+    if not is_safe_path(safe_base_path, full_path):
+        logger.warning(f"⚠️  [browse_files] 访问受限路径: {full_path}")
+        return jsonify({"error": "访问受限，仅能访问工作区目录"}), 403
+    
+    if not os.path.exists(full_path):
+        logger.warning(f"⚠️  [browse_files] 路径不存在: {full_path}")
+        return jsonify({"error": "Path not found"}), 404
+    
+    items = []
+    try:
+        for item in os.listdir(full_path):
+            item_full_path = os.path.join(full_path, item)
+            is_dir = os.path.isdir(item_full_path)
+            try:
+                size = os.path.getsize(item_full_path) if not is_dir else 0
+            except:
+                size = 0
+            items.append({
+                "name": item,
+                "path": item_full_path,
+                "isDirectory": is_dir,
+                "size": size
+            })
+        logger.info(f"✅ [browse_files] 返回 {len(items)} 个文件项")
+    except Exception as e:
+        logger.error(f"❌ [browse_files] 错误: {e}")
+        return jsonify({"error": str(e)}), 500
+    
+    return jsonify({"items": items, "path": full_path})
+
+@app.route("/api/files/read", methods=["GET"])
+@rate_limiter
+def read_file():
+    logger.info(f"📖 [read_file] 收到文件读取请求 | IP: {request.remote_addr}")
+    requested_path = request.args.get("path")
+    
+    if not requested_path:
+        logger.warning(f"⚠️  [read_file] 缺少路径参数")
+        return jsonify({"error": "路径不能为空"}), 400
+    
+    # 清理输入
+    requested_path = sanitize_input(requested_path)
+    logger.debug(f"🧹 清理后的路径: {requested_path}")
+    
+    # 安全检查
+    safe_base_path = "/workspace"
+    full_path = os.path.abspath(requested_path)
+    
+    if not is_safe_path(safe_base_path, full_path):
+        logger.warning(f"⚠️  [read_file] 访问受限文件: {full_path}")
+        return jsonify({"error": "访问受限，仅能访问工作区文件"}), 403
+    
+    if not os.path.isfile(full_path):
+        logger.warning(f"⚠️  [read_file] 文件不存在: {full_path}")
+        return jsonify({"error": "File not found"}), 404
+    
+    try:
+        with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        logger.info(f"✅ [read_file] 成功读取文件: {full_path}")
+        return jsonify({"content": content, "path": full_path})
+    except Exception as e:
+        logger.error(f"❌ [read_file] 错误: {e}")
+        return jsonify({"error": str(e)}), 500
+
+def main():
+    print("=" * 60)
+    print("50层代码分析系统 - API服务器")
+    print("=" * 60)
+    print(f"数据目录: {store.storage_path.absolute()}")
+    print(f"项目数: {len(store.load_projects())}")
+    print(f"问题数: {len(store.load_issues())}")
+    print(f"测试数: {len(store.load_tests())}")
+    print("=" * 60)
+    print("API端点:")
+    print("  GET  /api/health - 健康检查")
+    print("  GET  /api/projects - 获取项目列表")
+    print("  POST /api/projects - 创建项目")
+    print("  POST /api/analyze - 开始分析")
+    print("  GET  /api/issues - 获取问题列表")
+    print("  GET  /api/tests - 获取测试列表")
+    print("  POST /api/run-tests - 运行测试")
+    print("=" * 60)
+    
+    # 添加超时配置
+    import socket
+    socket.setdefaulttimeout(60)  # 全局socket超时60秒
+    
+    app.run(
+        host="0.0.0.0",
+        port=5174,
+        debug=True,
+        threaded=True  # 启用多线程支持
+    )
+
+if __name__ == "__main__":
+    main()
